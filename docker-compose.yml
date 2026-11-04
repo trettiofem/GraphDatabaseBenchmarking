@@ -2,7 +2,7 @@
 # Credentials come from .env (see .env.example).
 services:
   neo4j:
-    image: neo4j:5.26-community
+    image: neo4j:2026.07.1
     ports:
       - "7474:7474" # browser
       - "7687:7687" # bolt
@@ -12,6 +12,9 @@ services:
       NEO4J_server_memory_heap_initial__size: 2G
       NEO4J_server_memory_heap_max__size: 2G
       NEO4J_server_memory_pagecache_size: 1G
+      # Graph Data Science for the algorithm phase (downloaded on first start).
+      NEO4J_PLUGINS: '["graph-data-science"]'
+      NEO4J_dbms_security_procedures_unrestricted: gds.*
     volumes:
       - neo4j_data:/data
     cpus: 2
@@ -19,11 +22,19 @@ services:
     healthcheck:
       test: ["CMD", "cypher-shell", "-u", "${NEO4J_USER}", "-p", "${NEO4J_PASSWORD}", "RETURN 1"]
       interval: 5s
+      start_period: 120s
       retries: 20
 
   memgraph:
-    image: memgraph/memgraph:latest # shortcut: unpinned, pin a version before recording results
-    command: ["--also-log-to-stderr"]
+    image: memgraph/memgraph-mage:3.14.0 # MAGE = Memgraph + graph algorithms
+    command:
+      - --also-log-to-stderr
+      # Memgraph sizes itself from host RAM, not the container cap; ~90% of 4g makes it fail gracefully.
+      - --memory-limit=3686
+      # Default fsyncs the WAL every 100000 tx; set MG_WAL_FLUSH_EVERY_N_TX=1 to match Neo4j's fsync-per-commit.
+      - --storage-wal-file-flush-every-n-tx=${MG_WAL_FLUSH_EVERY_N_TX:-100000}
+      # Memgraph ignores the per-transaction Bolt timeout the bench sends Neo4j; this is its equivalent.
+      - --query-execution-timeout-sec=${BENCH_QUERY_TIMEOUT_SEC:-60}
     environment:
       MEMGRAPH_USER: ${MEMGRAPH_USER:?set in .env}
       MEMGRAPH_PASSWORD: ${MEMGRAPH_PASSWORD:?set in .env}
@@ -40,9 +51,9 @@ services:
 
   # One-shot loaders: wipe the graph, then run dataset.cypher, once per `up`.
   neo4j-load:
-    image: neo4j:5.26-community
+    image: neo4j:2026.07.1
     depends_on:
-      neo4j: {condition: service_healthy}
+      neo4j: { condition: service_healthy }
     volumes:
       - ./dataset.cypher:/dataset.cypher:ro
     entrypoint: ["sh", "-c"]
@@ -51,9 +62,9 @@ services:
     restart: "no"
 
   memgraph-load:
-    image: memgraph/memgraph:latest
+    image: memgraph/memgraph-mage:3.14.0
     depends_on:
-      memgraph: {condition: service_healthy}
+      memgraph: { condition: service_healthy }
     volumes:
       - ./dataset.cypher:/dataset.cypher:ro
     entrypoint: ["sh", "-c"]
